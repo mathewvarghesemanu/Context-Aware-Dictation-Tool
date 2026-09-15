@@ -343,6 +343,14 @@ async changeContextCaptureEnabledSetting(enabled: boolean) : Promise<Result<null
     else return { status: "error", error: e  as any };
 }
 },
+async changeContextCaptureScreenshotEnabledSetting(enabled: boolean) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("change_context_capture_screenshot_enabled_setting", { enabled }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async changeMuteWhileRecordingSetting(enabled: boolean) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("change_mute_while_recording_setting", { enabled }) };
@@ -1020,7 +1028,14 @@ selected_channel?: number | null; clamshell_microphone?: string | null; selected
  * the post-processing LLM so it can decide casing, capitalization and
  * whether the transcript continues an existing sentence.
  */
-context_capture_enabled?: boolean; mute_while_recording?: boolean; append_trailing_space?: boolean; app_language?: string; theme?: Theme; experimental_enabled?: boolean; lazy_stream_close?: boolean; keyboard_implementation?: KeyboardImplementation; show_tray_icon?: boolean; paste_delay_ms?: number; paste_delay_after_ms?: number; 
+context_capture_enabled?: boolean; 
+/**
+ * Fallback for apps that expose no accessible text: capture a small
+ * screenshot around the caret instead. Requires the Screen Recording
+ * permission and a vision-capable model, so it is opt-in on top of
+ * `context_capture_enabled`.
+ */
+context_capture_screenshot_enabled?: boolean; mute_while_recording?: boolean; append_trailing_space?: boolean; app_language?: string; theme?: Theme; experimental_enabled?: boolean; lazy_stream_close?: boolean; keyboard_implementation?: KeyboardImplementation; show_tray_icon?: boolean; paste_delay_ms?: number; paste_delay_after_ms?: number; 
 /**
  * Debug-gated ("beta") receipt-sequenced paste: restore the clipboard only
  * after the target app actually reads the transcript, instead of after a

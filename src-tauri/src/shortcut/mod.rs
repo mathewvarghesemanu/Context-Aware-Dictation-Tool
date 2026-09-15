@@ -1285,6 +1285,24 @@ pub fn set_post_process_selected_prompt(app: AppHandle, id: String) -> Result<()
 pub fn change_context_capture_enabled_setting(app: AppHandle, enabled: bool) -> Result<(), String> {
     let mut settings = settings::get_settings(&app);
     settings.context_capture_enabled = enabled;
+    // The screenshot fallback is a fallback *for* the text capture, so it can
+    // never outlive it. Clearing it in the same write keeps the stored pair
+    // consistent even when the settings UI is not mounted to do it.
+    if !enabled {
+        settings.context_capture_screenshot_enabled = false;
+    }
+    settings::write_settings(&app, settings);
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn change_context_capture_screenshot_enabled_setting(
+    app: AppHandle,
+    enabled: bool,
+) -> Result<(), String> {
+    let mut settings = settings::get_settings(&app);
+    settings.context_capture_screenshot_enabled = enabled;
     settings::write_settings(&app, settings);
     Ok(())
 }

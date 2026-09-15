@@ -160,6 +160,8 @@ const settingUpdaters: {
     commands.setPostProcessSelectedPrompt(value as string),
   context_capture_enabled: (value) =>
     commands.changeContextCaptureEnabledSetting(value as boolean),
+  context_capture_screenshot_enabled: (value) =>
+    commands.changeContextCaptureScreenshotEnabledSetting(value as boolean),
   mute_while_recording: (value) =>
     commands.changeMuteWhileRecordingSetting(value as boolean),
   append_trailing_space: (value) =>

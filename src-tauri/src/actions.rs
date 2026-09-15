@@ -109,8 +109,14 @@ fn build_context_block(context: &CaretContext) -> Option<String> {
     }
     block.push_str(">\n");
 
-    block.push_str(&format!("text_before_cursor: {:?}\n", context.before));
-    block.push_str(&format!("text_after_cursor: {:?}\n", context.after));
+    if context.has_text() {
+        block.push_str(&format!("text_before_cursor: {:?}\n", context.before));
+        block.push_str(&format!("text_after_cursor: {:?}\n", context.after));
+    } else {
+        block.push_str(
+            "The attached image is a screenshot of the area around the user's cursor. No accessible text was available; read the cursor position from the image.\n",
+        );
+    }
 
     block.push_str("</cursor_context>\n");
     block.push_str(CONTEXT_INSTRUCTIONS);
@@ -226,8 +232,13 @@ async fn post_process_transcription(
     // field the endpoint understands and retries without it if rejected.
     let disable_reasoning = matches!(provider.id.as_str(), "custom" | "openrouter");
 
-    // Caret context, when captured, rides along as a prompt fragment.
+    // Caret context, when captured, rides along as a prompt fragment plus (for
+    // the screenshot fallback) an attached image.
     let context_block = context.and_then(build_context_block);
+    let images: Vec<String> = context
+        .and_then(|context| context.screenshot_png_base64.clone())
+        .into_iter()
+        .collect();
 
     if provider.supports_structured_output {
         debug!("Using structured outputs for provider '{}'", provider.id);
@@ -295,18 +306,42 @@ async fn post_process_transcription(
             "additionalProperties": false
         });
 
-        match crate::llm_client::send_chat_completion_with_schema(
+        let mut response = crate::llm_client::send_chat_completion_with_schema(
             &provider,
             api_key.clone(),
             &model,
-            user_content,
-            Some(system_prompt),
-            Some(json_schema),
+            user_content.clone(),
+            Some(system_prompt.clone()),
+            Some(json_schema.clone()),
             disable_reasoning,
-            Vec::new(),
+            images.clone(),
         )
-        .await
-        {
+        .await;
+
+        // A model that can't accept images rejects the whole request, which
+        // would cost the user their post-processing entirely. The screenshot is
+        // only ever a hint, so drop it and try again before giving up.
+        if !images.is_empty() {
+            if let Err(e) = &response {
+                warn!(
+                    "Request with caret screenshot failed for provider '{}': {}. Retrying without the image.",
+                    provider.id, e
+                );
+                response = crate::llm_client::send_chat_completion_with_schema(
+                    &provider,
+                    api_key.clone(),
+                    &model,
+                    user_content,
+                    Some(system_prompt),
+                    Some(json_schema),
+                    disable_reasoning,
+                    Vec::new(),
+                )
+                .await;
+            }
+        }
+
+        match response {
             Ok(Some(content)) => {
                 // Parse the JSON response to extract the transcription field
                 let content = strip_think_block(&content);
@@ -357,16 +392,35 @@ async fn post_process_transcription(
     }
     debug!("Processed prompt length: {} chars", processed_prompt.len());
 
-    match crate::llm_client::send_chat_completion(
+    let mut response = crate::llm_client::send_chat_completion(
         &provider,
-        api_key,
+        api_key.clone(),
         &model,
-        processed_prompt,
+        processed_prompt.clone(),
         disable_reasoning,
-        Vec::new(),
+        images.clone(),
     )
-    .await
-    {
+    .await;
+
+    if !images.is_empty() {
+        if let Err(e) = &response {
+            warn!(
+                "Legacy request with caret screenshot failed for provider '{}': {}. Retrying without the image.",
+                provider.id, e
+            );
+            response = crate::llm_client::send_chat_completion(
+                &provider,
+                api_key,
+                &model,
+                processed_prompt,
+                disable_reasoning,
+                Vec::new(),
+            )
+            .await;
+        }
+    }
+
+    match response {
         Ok(Some(content)) => {
             let content = strip_invisible_chars(strip_think_block(&content));
             debug!(
@@ -697,9 +751,13 @@ impl ShortcutAction for TranscribeAction {
         //
         // Synchronous on the shortcut thread, before any of the stop work, so
         // nothing can shift focus first. The accessibility reads are
-        // sub-millisecond, well under the transcription that follows.
+        // sub-millisecond; the opt-in screenshot can add a few tens of
+        // milliseconds ahead of a transcription that takes far longer.
         if self.post_process && settings.post_process_enabled && settings.context_capture_enabled {
-            context_capture::capture_for_dictation();
+            context_capture::capture_for_dictation(
+                true,
+                settings.context_capture_screenshot_enabled,
+            );
         }
 
         // Prevent a slow microphone from emitting a ready event or start chime
@@ -1128,6 +1186,7 @@ mod context_block_tests {
             before: "I went to the store and ".to_string(),
             after: " yesterday.".to_string(),
             app_name: Some("Notes".to_string()),
+            screenshot_png_base64: None,
         })
         .expect("text context should produce a block");
 
@@ -1147,5 +1206,17 @@ mod context_block_tests {
         .expect("block");
 
         assert!(block.contains("app=\"Ev'il\""));
+    }
+
+    #[test]
+    fn screenshot_only_context_points_the_model_at_the_image() {
+        let block = build_context_block(&CaretContext {
+            screenshot_png_base64: Some("base64".to_string()),
+            ..Default::default()
+        })
+        .expect("screenshot context should produce a block");
+
+        assert!(block.contains("attached image"));
+        assert!(!block.contains("text_before_cursor"));
     }
 }
