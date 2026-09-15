@@ -53,6 +53,15 @@ enum ManagerCommand {
         binding_id: String,
         response: Sender<Result<(), String>>,
     },
+    /// Tear the CGEventTap down entirely, remembering what was registered.
+    SuspendTap {
+        response: Sender<Result<(), String>>,
+    },
+    /// Rebuild the tap and restore the registrations taken down by
+    /// `SuspendTap`.
+    ResumeTap {
+        response: Sender<Result<(), String>>,
+    },
     Shutdown,
 }
 
@@ -110,14 +119,24 @@ impl HandyKeysState {
     fn manager_thread(cmd_rx: Receiver<ManagerCommand>, app: AppHandle) {
         info!("handy-keys manager thread started");
 
-        // Create the HotkeyManager in this thread
-        let manager = match HotkeyManager::new_with_blocking() {
-            Ok(m) => m,
+        // Create the HotkeyManager in this thread.
+        //
+        // Held in an Option because the tap it owns can be torn down and
+        // rebuilt at runtime (see `SuspendTap`): on macOS this is an active,
+        // head-inserted CGEventTap, so while it exists every keystroke and
+        // mouse event in the session is routed through this thread. Any call
+        // that can stall the WindowServer (the Screen Recording TCC prompt is
+        // the known offender) must not run while it is installed.
+        let mut manager = match HotkeyManager::new_with_blocking() {
+            Ok(m) => Some(m),
             Err(e) => {
                 error!("Failed to create HotkeyManager: {}", e);
                 return;
             }
         };
+
+        // Registrations parked while the tap is suspended, restored on resume.
+        let mut suspended: Vec<(String, String)> = Vec::new();
 
         // Maps binding IDs to HotkeyIds and hotkey strings
         let mut binding_to_hotkey: HashMap<String, HotkeyId> = HashMap::new();
@@ -125,7 +144,7 @@ impl HandyKeysState {
 
         loop {
             // Check for hotkey events (non-blocking)
-            while let Some(event) = manager.try_recv() {
+            while let Some(event) = manager.as_ref().and_then(|m| m.try_recv()) {
                 if let Some((binding_id, hotkey_string)) = hotkey_to_binding.get(&event.id) {
                     debug!(
                         "handy-keys event: binding={}, hotkey={}, state={:?}",
@@ -144,25 +163,91 @@ impl HandyKeysState {
                         hotkey_string,
                         response,
                     } => {
-                        let result = Self::do_register(
-                            &manager,
-                            &mut binding_to_hotkey,
-                            &mut hotkey_to_binding,
-                            &binding_id,
-                            &hotkey_string,
-                        );
+                        let result = match manager.as_ref() {
+                            Some(manager) => Self::do_register(
+                                manager,
+                                &mut binding_to_hotkey,
+                                &mut hotkey_to_binding,
+                                &binding_id,
+                                &hotkey_string,
+                            ),
+                            // Tap suspended: remember the binding so resume
+                            // brings it back rather than losing it.
+                            None => {
+                                suspended.push((binding_id.clone(), hotkey_string.clone()));
+                                Ok(())
+                            }
+                        };
                         let _ = response.send(result);
                     }
                     ManagerCommand::Unregister {
                         binding_id,
                         response,
                     } => {
-                        let result = Self::do_unregister(
-                            &manager,
-                            &mut binding_to_hotkey,
-                            &mut hotkey_to_binding,
-                            &binding_id,
-                        );
+                        let result = match manager.as_ref() {
+                            Some(manager) => Self::do_unregister(
+                                manager,
+                                &mut binding_to_hotkey,
+                                &mut hotkey_to_binding,
+                                &binding_id,
+                            ),
+                            None => {
+                                suspended.retain(|(id, _)| id != &binding_id);
+                                Ok(())
+                            }
+                        };
+                        let _ = response.send(result);
+                    }
+                    ManagerCommand::SuspendTap { response } => {
+                        if manager.is_some() {
+                            suspended = hotkey_to_binding
+                                .values()
+                                .map(|(binding_id, hotkey_string)| {
+                                    (binding_id.clone(), hotkey_string.clone())
+                                })
+                                .collect();
+                            binding_to_hotkey.clear();
+                            hotkey_to_binding.clear();
+                            // Dropping the manager drops the listener, which
+                            // stops the tap's run loop and removes it from the
+                            // event stream.
+                            manager = None;
+                            info!(
+                                "handy-keys event tap suspended ({} binding(s) parked)",
+                                suspended.len()
+                            );
+                        }
+                        let _ = response.send(Ok(()));
+                    }
+                    ManagerCommand::ResumeTap { response } => {
+                        let result = if manager.is_some() {
+                            Ok(())
+                        } else {
+                            match HotkeyManager::new_with_blocking() {
+                                Ok(new_manager) => {
+                                    for (binding_id, hotkey_string) in
+                                        std::mem::take(&mut suspended)
+                                    {
+                                        if let Err(e) = Self::do_register(
+                                            &new_manager,
+                                            &mut binding_to_hotkey,
+                                            &mut hotkey_to_binding,
+                                            &binding_id,
+                                            &hotkey_string,
+                                        ) {
+                                            error!(
+                                                "Failed to restore binding '{}' after tap resume: {}",
+                                                binding_id, e
+                                            );
+                                        }
+                                    }
+                                    manager = Some(new_manager);
+                                    info!("handy-keys event tap resumed");
+                                    Ok(())
+                                }
+                                Err(e) => Err(format!("Failed to rebuild HotkeyManager: {}", e)),
+                            }
+                        };
                         let _ = response.send(result);
                     }
                     ManagerCommand::Shutdown => {
@@ -257,6 +342,31 @@ impl HandyKeysState {
 
         rx.recv()
             .map_err(|_| "Failed to receive unregister response")?
+    }
+
+    /// Tear down the CGEventTap, parking the current registrations.
+    pub fn suspend_tap(&self) -> Result<(), String> {
+        let (tx, rx) = mpsc::channel();
+        self.command_sender
+            .lock()
+            .map_err(|_| "Failed to lock command_sender")?
+            .send(ManagerCommand::SuspendTap { response: tx })
+            .map_err(|_| "Failed to send suspend command")?;
+
+        rx.recv()
+            .map_err(|_| "Failed to receive suspend response")?
+    }
+
+    /// Rebuild the tap and restore the parked registrations.
+    pub fn resume_tap(&self) -> Result<(), String> {
+        let (tx, rx) = mpsc::channel();
+        self.command_sender
+            .lock()
+            .map_err(|_| "Failed to lock command_sender")?
+            .send(ManagerCommand::ResumeTap { response: tx })
+            .map_err(|_| "Failed to send resume command")?;
+
+        rx.recv().map_err(|_| "Failed to receive resume response")?
     }
 
     /// Start recording mode for a specific binding
@@ -508,6 +618,23 @@ pub fn register_shortcut(app: &AppHandle, binding: ShortcutBinding) -> Result<()
         .try_state::<HandyKeysState>()
         .ok_or("HandyKeysState not initialized")?;
     state.register(&binding)
+}
+
+/// Tear down the event tap (macOS: the CGEventTap), parking registrations.
+/// No-op when handy-keys is not the active implementation.
+pub fn suspend_event_tap(app: &AppHandle) -> Result<(), String> {
+    match app.try_state::<HandyKeysState>() {
+        Some(state) => state.suspend_tap(),
+        None => Ok(()),
+    }
+}
+
+/// Rebuild the event tap and restore the parked registrations.
+pub fn resume_event_tap(app: &AppHandle) -> Result<(), String> {
+    match app.try_state::<HandyKeysState>() {
+        Some(state) => state.resume_tap(),
+        None => Ok(()),
+    }
 }
 
 /// Unregister a shortcut
