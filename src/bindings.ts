@@ -500,6 +500,30 @@ async stopHandyKeysRecording() : Promise<Result<null, string>> {
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Is the Screen Recording permission granted right now?
+ * 
+ * Cheap and safe to call on discrete UI events (mount, window focus, a
+ * "check again" button). Not safe to call on a timer — see the module docs.
+ */
+async checkScreenCapturePermission() : Promise<boolean> {
+    return await TAURI_INVOKE("check_screen_capture_permission");
+},
+/**
+ * Raise the system Screen Recording prompt, then report whether the
+ * permission ended up granted.
+ * 
+ * Returns immediately with `true` when the permission is already held, and
+ * `false` when a prompt is already in flight.
+ */
+async requestScreenCapturePermission() : Promise<Result<boolean, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("request_screen_capture_permission") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async getSecureInputStatus() : Promise<SecureInputStatus> {
     return await TAURI_INVOKE("get_secure_input_status");
 },
