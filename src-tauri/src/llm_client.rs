@@ -7,10 +7,35 @@ use std::collections::HashSet;
 use std::error::Error as StdError;
 use std::sync::{Mutex, OnceLock};
 
+/// One part of a multimodal user message. Text-only messages keep serializing
+/// as a bare string (see [`MessageContent`]) so requests to providers that
+/// don't understand content arrays are byte-identical to what they were before
+/// image support existed.
+#[derive(Debug, Serialize)]
+#[serde(tag = "type")]
+enum ContentPart {
+    #[serde(rename = "text")]
+    Text { text: String },
+    #[serde(rename = "image_url")]
+    ImageUrl { image_url: ImageUrl },
+}
+
+#[derive(Debug, Serialize)]
+struct ImageUrl {
+    url: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+enum MessageContent {
+    Text(String),
+    Parts(Vec<ContentPart>),
+}
+
 #[derive(Debug, Serialize)]
 struct ChatMessage {
     role: String,
-    content: String,
+    content: MessageContent,
 }
 
 #[derive(Debug, Serialize)]
@@ -303,6 +328,7 @@ pub async fn send_chat_completion(
     model: &str,
     prompt: String,
     disable_reasoning: bool,
+    images: Vec<String>,
 ) -> Result<Option<String>, String> {
     send_chat_completion_with_schema(
         provider,
@@ -312,6 +338,7 @@ pub async fn send_chat_completion(
         None,
         None,
         disable_reasoning,
+        images,
     )
     .await
 }
@@ -326,6 +353,9 @@ pub async fn send_chat_completion(
 /// upstreams reject with 400), so a 400/422 answer to such a request triggers
 /// one retry without the fields, and the rejection is remembered per
 /// (base_url, model) so later requests skip the failing attempt entirely.
+// The argument list mirrors the OpenAI chat-completions surface this wraps;
+// bundling it into a struct would only move the same fields around.
+#[allow(clippy::too_many_arguments)]
 pub async fn send_chat_completion_with_schema(
     provider: &PostProcessProvider,
     api_key: String,
@@ -334,6 +364,9 @@ pub async fn send_chat_completion_with_schema(
     system_prompt: Option<String>,
     json_schema: Option<Value>,
     disable_reasoning: bool,
+    // `images` holds base64-encoded PNGs to attach to the user message. Empty
+    // for the common text-only case, which keeps `content` a plain string.
+    images: Vec<String>,
 ) -> Result<Option<String>, String> {
     let base_url = provider.base_url.trim_end_matches('/');
     let url = format!("{}/chat/completions", base_url);
@@ -352,14 +385,27 @@ pub async fn send_chat_completion_with_schema(
     if let Some(system) = system_prompt {
         messages.push(ChatMessage {
             role: "system".to_string(),
-            content: system,
+            content: MessageContent::Text(system),
         });
     }
 
-    // Add user message
+    // Add user message. Images force the content-array form; without them the
+    // message stays a plain string for maximum provider compatibility.
+    let content = if images.is_empty() {
+        MessageContent::Text(user_content)
+    } else {
+        debug!("Attaching {} image(s) to the user message", images.len());
+        let mut parts = vec![ContentPart::Text { text: user_content }];
+        parts.extend(images.into_iter().map(|image| ContentPart::ImageUrl {
+            image_url: ImageUrl {
+                url: format!("data:image/png;base64,{}", image),
+            },
+        }));
+        MessageContent::Parts(parts)
+    };
     messages.push(ChatMessage {
         role: "user".to_string(),
-        content: user_content,
+        content,
     });
 
     // Build response_format if schema is provided
@@ -569,13 +615,47 @@ mod tests {
             model: "test-model".to_string(),
             messages: vec![ChatMessage {
                 role: "user".to_string(),
-                content: "hi".to_string(),
+                content: MessageContent::Text("hi".to_string()),
             }],
             stream: false,
             response_format: None,
             reasoning,
         };
         serde_json::to_value(&request).unwrap()
+    }
+
+    /// Text-only messages must keep serializing as a bare string so providers
+    /// that never learned about content arrays see an unchanged request.
+    #[test]
+    fn text_only_content_serializes_as_a_string() {
+        let json = request_json(ReasoningParams::default());
+        assert_eq!(json["messages"][0]["content"], serde_json::json!("hi"));
+    }
+
+    #[test]
+    fn image_content_serializes_as_an_openai_content_array() {
+        let message = ChatMessage {
+            role: "user".to_string(),
+            content: MessageContent::Parts(vec![
+                ContentPart::Text {
+                    text: "hi".to_string(),
+                },
+                ContentPart::ImageUrl {
+                    image_url: ImageUrl {
+                        url: "data:image/png;base64,QUJD".to_string(),
+                    },
+                },
+            ]),
+        };
+        let json = serde_json::to_value(&message).unwrap();
+
+        assert_eq!(json["content"][0]["type"], "text");
+        assert_eq!(json["content"][0]["text"], "hi");
+        assert_eq!(json["content"][1]["type"], "image_url");
+        assert_eq!(
+            json["content"][1]["image_url"]["url"],
+            "data:image/png;base64,QUJD"
+        );
     }
 
     async fn serve_one_response(status: &str, body: &str) -> String {

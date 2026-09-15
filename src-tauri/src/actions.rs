@@ -261,6 +261,7 @@ async fn post_process_transcription(settings: &AppSettings, transcription: &str)
             Some(system_prompt),
             Some(json_schema),
             disable_reasoning,
+            Vec::new(),
         )
         .await
         {
@@ -317,6 +318,7 @@ async fn post_process_transcription(settings: &AppSettings, transcription: &str)
         &model,
         processed_prompt,
         disable_reasoning,
+        Vec::new(),
     )
     .await
     {
