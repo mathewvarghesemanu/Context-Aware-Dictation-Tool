@@ -457,6 +457,11 @@ pub struct AppSettings {
     pub post_process_prompts: Vec<LLMPrompt>,
     #[serde(default)]
     pub post_process_selected_prompt_id: Option<String>,
+    /// Read the text surrounding the caret in the focused app and hand it to
+    /// the post-processing LLM so it can decide casing, capitalization and
+    /// whether the transcript continues an existing sentence.
+    #[serde(default)]
+    pub context_capture_enabled: bool,
     #[serde(default)]
     pub mute_while_recording: bool,
     #[serde(default)]
@@ -948,6 +953,7 @@ pub fn get_default_settings() -> AppSettings {
         post_process_models: default_post_process_models(),
         post_process_prompts: default_post_process_prompts(),
         post_process_selected_prompt_id: None,
+        context_capture_enabled: false,
         mute_while_recording: false,
         append_trailing_space: false,
         app_language: default_app_language(),
