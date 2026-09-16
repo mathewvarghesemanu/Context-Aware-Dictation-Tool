@@ -159,6 +159,20 @@ objc2 = "0.6"
 objc2-foundation = "0.3"
 objc2-app-kit = "0.3"
 objc2-service-management = "0.3.2"
+# ScreenCaptureKit is the only supported way to grab pixels on macOS 15+;
+# CGWindowListCreateImage was deprecated in 14 and no longer returns usable
+# images there. Used by the caret-context screenshot fallback, which keeps the
+# CGWindowList path for macOS 13/14.
+objc2-screen-capture-kit = { version = "0.3.2", default-features = false, features = [
+  "std",
+  "SCScreenshotManager",
+  "block2",
+  "objc2-core-foundation",
+  "objc2-core-graphics",
+] }
+objc2-core-foundation = "0.3"
+objc2-core-graphics = "0.3"
+block2 = "0.6"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk-layer-shell = { version = "0.8", features = ["v0_6"] }

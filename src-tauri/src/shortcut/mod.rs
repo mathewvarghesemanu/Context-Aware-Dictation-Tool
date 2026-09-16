@@ -97,6 +97,37 @@ pub fn unregister_shortcut(app: &AppHandle, binding: ShortcutBinding) -> Result<
     }
 }
 
+/// Remove the global keyboard hook from the system event stream for the
+/// duration of a call that can stall the WindowServer.
+///
+/// On macOS the handy-keys backend installs an *active* (head-inserted,
+/// non-listen-only) CGEventTap, which puts this process in the delivery path of
+/// every key and mouse event in the session. Anything that blocks that path
+/// blocks system-wide input, which reads to the user as the whole machine
+/// freezing. The Screen Recording TCC prompt is exactly such a call, so it is
+/// bracketed by suspend/resume.
+///
+/// The Tauri backend uses Carbon hotkeys, which are not in the event path, so
+/// there is nothing to suspend there.
+pub fn suspend_event_tap(app: &AppHandle) {
+    let settings = get_settings(app);
+    if settings.keyboard_implementation == KeyboardImplementation::HandyKeys {
+        if let Err(e) = handy_keys::suspend_event_tap(app) {
+            warn!("Could not suspend the keyboard event tap: {}", e);
+        }
+    }
+}
+
+/// Restore the hook suspended by [`suspend_event_tap`].
+pub fn resume_event_tap(app: &AppHandle) {
+    let settings = get_settings(app);
+    if settings.keyboard_implementation == KeyboardImplementation::HandyKeys {
+        if let Err(e) = handy_keys::resume_event_tap(app) {
+            error!("Could not resume the keyboard event tap: {}", e);
+        }
+    }
+}
+
 // ============================================================================
 // Binding Management Commands
 // ============================================================================
@@ -1245,6 +1276,33 @@ pub fn set_post_process_selected_prompt(app: AppHandle, id: String) -> Result<()
     }
 
     settings.post_process_selected_prompt_id = Some(id);
+    settings::write_settings(&app, settings);
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn change_context_capture_enabled_setting(app: AppHandle, enabled: bool) -> Result<(), String> {
+    let mut settings = settings::get_settings(&app);
+    settings.context_capture_enabled = enabled;
+    // The screenshot fallback is a fallback *for* the text capture, so it can
+    // never outlive it. Clearing it in the same write keeps the stored pair
+    // consistent even when the settings UI is not mounted to do it.
+    if !enabled {
+        settings.context_capture_screenshot_enabled = false;
+    }
+    settings::write_settings(&app, settings);
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn change_context_capture_screenshot_enabled_setting(
+    app: AppHandle,
+    enabled: bool,
+) -> Result<(), String> {
+    let mut settings = settings::get_settings(&app);
+    settings.context_capture_screenshot_enabled = enabled;
     settings::write_settings(&app, settings);
     Ok(())
 }

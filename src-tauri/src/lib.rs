@@ -8,6 +8,7 @@ mod catalog;
 pub mod cli;
 mod clipboard;
 mod commands;
+mod context_capture;
 mod helpers;
 mod input;
 mod llm_client;
@@ -16,6 +17,7 @@ mod memory;
 mod overlay;
 mod paste_tx;
 pub mod portable;
+mod screen_permission;
 mod secure_input;
 mod settings;
 mod shortcut;
@@ -689,6 +691,8 @@ pub fn run(cli_args: CliArgs) {
             shortcut::update_custom_words,
             shortcut::suspend_all_bindings,
             shortcut::resume_all_bindings,
+            shortcut::change_context_capture_enabled_setting,
+            shortcut::change_context_capture_screenshot_enabled_setting,
             shortcut::change_mute_while_recording_setting,
             shortcut::change_append_trailing_space_setting,
             shortcut::change_lazy_stream_close_setting,
@@ -708,6 +712,8 @@ pub fn run(cli_args: CliArgs) {
             shortcut::get_available_accelerators,
             shortcut::handy_keys::start_handy_keys_recording,
             shortcut::handy_keys::stop_handy_keys_recording,
+            screen_permission::check_screen_capture_permission,
+            screen_permission::request_screen_capture_permission,
             secure_input::get_secure_input_status,
             secure_input::run_keyboard_diagnostic,
             trigger_update_check,

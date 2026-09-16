@@ -452,6 +452,22 @@
         "cancel": "Cancel",
         "selectToEdit": "Select a prompt above to view and edit its details.",
         "createFirst": "Click 'Create New Prompt' above to create your first post-processing prompt."
+      },
+      "context": {
+        "title": "Cursor Context",
+        "capture": {
+          "title": "Send text around the cursor",
+          "description": "Reads the text immediately before and after your cursor in the focused app and includes it in the post-processing prompt, so the model can tell whether your dictation starts a new sentence or continues one. The text is never saved to history. Requires the Accessibility permission. macOS only."
+        },
+        "screenshot": {
+          "title": "Screenshot fallback",
+          "description": "When the focused app exposes no readable text, capture a small square around the cursor and send it as an image instead. Requires the Screen Recording permission and a model that accepts images; if the model rejects the image, the request is retried without it.",
+          "permissionWaiting": "Waiting for the Screen Recording permission. Allow Handy in the system dialog; the switch turns on once access is granted.",
+          "permissionRequired": "Screenshot fallback stayed off because Handy does not have the Screen Recording permission. Grant it in System Settings › Privacy & Security › Screen Recording (restarting Handy may be needed for it to take effect), then come back to this window or use the button below.",
+          "permissionRevoked": "Screenshot fallback was turned off because the Screen Recording permission is no longer granted. Flip the switch again to ask for it, or grant it in System Settings and check again.",
+          "permissionRecheck": "Check permission again"
+        },
+        "unsupportedPlatform": "Cursor context is currently available on macOS only."
       }
     },
     "history": {
